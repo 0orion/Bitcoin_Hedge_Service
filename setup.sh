@@ -1,18 +1,15 @@
 #!/bin/bash
 
-# Create necessary directories
-mkdir -p logs
+# Create a virtual environment if not already created
+if [ ! -d ".venv" ]; then
+    python3 -m venv .venv
+fi
 
-# Create a copy of the crude service file
-cp hedge_service.py hedge_service2.py
+# Activate the virtual environment
+source .venv/bin/activate
 
-# Create a virtual environment
-python3 -m venv venv
-
-# Activate virtual environment
-source venv/bin/activate
-
-# Install dependencies
+# Install required dependencies
 pip install -r requirements.txt
 
-echo "Setup complete! Please edit hedge_service.py with your credentials before running." 
+# Optionally, run the Flask app
+# FLASK_APP=hedge_service.py FLASK_ENV=development flask run

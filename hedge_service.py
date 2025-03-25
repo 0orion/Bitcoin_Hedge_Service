@@ -1,202 +1,111 @@
-import requests
-import time
 from flask import Flask, request, jsonify
-import threading
+import logging
 
 
-print("Starting hedge service")
-
-
-ECLAIR_API_URL = "http://localhost:8080"
-ECLAIR_API_PASSWORD = "password123"
-LNMARKETS_API_URL = "https://api.lnmarkets.com/v1"
-LNMARKETS_API_KEY = "my_api_key"
-LNMARKETS_API_SECRET = "my_secret"
-LNMARKETS_API_PASSPHRASE = "my_passphrase"
-
-
-fiat_channels = {}
-total_capacity = 0
-current_position = 0
-last_sync_time = None
-
-
-app = Flask(__name__)
-
-
-def get_channels():
-    print("Getting channels")
-    response = requests.post(
-        f"{ECLAIR_API_URL}/channels",
-        headers={'Content-Type': 'application/json'},
-        auth=('', ECLAIR_API_PASSWORD)
-    )
-    return response.json()
-
-
-def sync_channels():
-    print("Syncing channels")
-    global fiat_channels, total_capacity
-    
-
-    channels = get_channels()
-
-    fiat_channels = {}
-    total_capacity = 0
+from class_eclair import Eclair_API
+from class_LNM import LNM_hedge
+from Total_cap import calculate_total_capacity
+from Schedule import start_scheduler
+from Deposit_Withdrawal import LNMarkets_Deposit_Withdraw
 
 
 
-    for channel in channels:
-        channel_id = channel.get('channelId')
-        capacity = channel.get('capacity', 0)
-        fiat_channels[channel_id] = {
-            'capacity': capacity,
-            'details': channel
-        }
-        total_capacity += capacity
-    
-    print(f"Synced {len(fiat_channels)} channels, total capacity: {total_capacity}")
-    
+app = Flask (__name__)
 
-
-
-    response = requests.get(
-        f"{LNMARKETS_API_URL}/futures/positions",
-        headers={
-            'Content-Type': 'application/json',
-            'X-Api-Key': LNMARKETS_API_KEY,
-            'X-Api-Secret': LNMARKETS_API_SECRET,
-            'X-Api-Passphrase': LNMARKETS_API_PASSPHRASE
-        }
-    )
-    positions = response.json()
-
-
-
-
-    global current_position
-    current_position = 0
-    for position in positions:
-        if position['status'] == 'open':
-            current_position += position['margin']
-    
-
-
-
-    reserve_amount = total_capacity * 0.1
-    required_hedge = total_capacity - reserve_amount
-
-
-    delta = required_hedge - current_position
-    
-
-
-    if abs(delta) > (required_hedge * 0.05):
-        print(f"Need to adjust hedge by {delta}")
-        
-
-        side = 'b' if delta > 0 else 's'
-        abs_amount = abs(delta)
-        
-        data = {
-            'type': 'l',
-            'side': side,
-            'leverage': 1,
-            'quantity': abs_amount,
-            'price': 0,
-        }
-        
-        response = requests.post(
-            f"{LNMARKETS_API_URL}/futures/positions",
-            json=data,
-            headers={
-                'Content-Type': 'application/json',
-                'X-Api-Key': LNMARKETS_API_KEY,
-                'X-Api-Secret': LNMARKETS_API_SECRET,
-                'X-Api-Passphrase': LNMARKETS_API_PASSPHRASE
-            }
-        )
-        print("Adjusted hedge position")
-    else:
-        print("No need to adjust hedge")
-
-
-
-
-
+reserve_percent = 0.10
+reserve = calculate_total_capacity() * reserve_percent
 
 
 @app.route('/hedge', methods=['POST'])
-def hedge_endpoint():
-    data = request.json
-    if not data:
-        return jsonify({"status": "error", "message": "No data"}), 400
-    
-    channel_id = data.get('channel_id')
-    amount_change = data.get('amount_change', 0)
-    
-    if not channel_id or amount_change == 0:
-        return jsonify({"status": "error", "message": "Invalid data"}), 400
-    
+def hedge():
 
-    if channel_id in fiat_channels:
-
-        global total_capacity
-        fiat_channels[channel_id]['capacity'] += amount_change
-        total_capacity += amount_change
-        
-        print(f"Updated channel {channel_id} by {amount_change}")
-        
-
-        side = 'b' if amount_change > 0 else 's'
-        abs_amount = abs(amount_change)
-        
-        data = {
-            'type': 'l',
-            'side': side,
-            'leverage': 1,
-            'quantity': abs_amount,
-            'price': 0,
-        }
-        
-
-        response = requests.post(
-            f"{LNMARKETS_API_URL}/futures/positions",
-            json=data,
-            headers={
-                'Content-Type': 'application/json',
-                'X-Api-Key': LNMARKETS_API_KEY,
-                'X-Api-Secret': LNMARKETS_API_SECRET,
-                'X-Api-Passphrase': LNMARKETS_API_PASSPHRASE
-            }
-        )
-        
-        return jsonify({"status": "success", "message": "Updated"})
-    else:
-        print(f"Unknown channel: {channel_id}")
-        return jsonify({"status": "error", "message": f"Unknown channel: {channel_id}"}), 400
-
-
-def sync_thread_function():
-    while True:
-        try:
-            sync_channels()
-        except Exception as e:
-            print(f"Error in sync: {e}")
-        
-
-        time.sleep(300)
-
-if __name__ == "__main__":
 
     try:
-        sync_channels()
+        data = request.json
+        logging.info(f"Receieved data: {data}")
+
+        eclair_api = Eclair_API(base_url="http://localhost:8080", api_key="Your_Eclair_API_key")
+        channel_data = eclair_api.get_channel_info()
+
+
+        if channel_data is None:
+            loggin.erro("Failed to fetch channel data from Eclair API")
+            return jsonify({"error: Failed to retrieve channel data"}), 500
+
+        total_capacity = calculate_total_capacity(channel_data)
+        delta = total_capacity - reserve
+
+        logging.debug(f"Total capacity: {total_capacity}, Delta: {delta}")
+
+        lnmarket_hedge = LNM_hedge(api_key="Your_LNM_API_key")
+        result = lnmarket_hedge.hedge_position(delta)
+
+        if resut.get("error"):
+            logging.error(f"Hedging failed: {result['error']})
+            return jsonify({"error": "Hedging failed"}), 500
+
+        logging.info(f"Hedge successfully placed. Delta: {delta}")
+        return jsonify(result), 200
+
     except Exception as e:
-        print(f"Error in initial sync: {e}")
+        logging.exception("An unexpected error occured while processing request")
+        return jsonify({"error": "Internal Server error"}), 500
 
-    thread = threading.Thread(target=sync_thread_function)
-    thread.daemon = True
-    thread.start()
-    
+eclair_api =Eclair_API(base_url="http://localhost:8080", api_key="Your_eclair_api_key")
 
-    app.run(host='0.0.0.0', port=5000) 
+start_scheduler(eclair_api)
+
+
+lnmarkets_api_key = 'your_lnmarkets_api_key'
+lnmarkets = LNMarkets_Deposit_Withdraw(api_key=lnmarkets_api_key)
+
+
+@app.route('/deposit', methods=['POST'])
+def deposit():
+
+
+    try:
+
+        data = request.json
+        amount = data.get('amount')
+        if amount is None or amount <= 0:
+            return jsonify({"error": "Invalid amount"}), 400
+
+
+        result = lnmarkets.deposit_satoshis(amount)
+
+
+        if result.get("error"):
+            return jsonify(result), 500
+
+
+        return jsonify(result), 200
+    except Exception as e:
+        logging.exception("Erro occurred while procesing deposit")
+        return jsonify({"error": "Internal Server Error"}), 500
+
+
+@app.route('/withdraw', methods=['POST'])
+def withdraw():
+
+
+    try:
+        data = request.json
+        amount = data.get('amount')
+        if amount is None or amount <= 0:
+            return jsonify({"error": "Invalid amount"}), 400
+
+        result = lnmarkets.withdraw_satoshis(amount)
+
+        if result.get("error"):
+            return jsonify(result), 500
+
+        return jsonify(result), 200
+    except Exception as e:
+        logging.exception("Error occurred while processing withdrawal")
+        return jsonify({"error": "Internal Server Error"}), 500
+
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    app.run(debug=True)
